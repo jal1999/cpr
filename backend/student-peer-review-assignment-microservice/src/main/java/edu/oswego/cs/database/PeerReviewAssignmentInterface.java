@@ -150,7 +150,17 @@ public class PeerReviewAssignmentInterface {
             //makeFinalGrade(courseID, assignmentID, targetTeam);
             redoneMakeFinalGrade(courseID, assignmentID, targetTeam);
         }
-        if (assignmentDocument.get("completed_teams") == assignmentDocument.get("assigned_teams")) {
+
+        //check if all team grades have been finalized
+        int num_of_reviews_needed = completedTeams.keySet().size()*assignmentDocument.getInteger("reviews_per_team");
+        int total_num_of_reviews = 0;
+        for (Map.Entry<String, List<String>> entry : completedTeams.entrySet()) {
+            List<String> list = entry.getValue();
+            total_num_of_reviews+=list.size();
+        }
+
+
+        if (total_num_of_reviews==num_of_reviews_needed) {
             assignmentCollection.findOneAndUpdate(and(eq("course_id", courseID), eq("assignment_id", assignmentID)), set("grade_finalized", true));
         }
     }
@@ -401,7 +411,18 @@ public class PeerReviewAssignmentInterface {
                 eq("team_name", teamName),
                 eq("type", "team_submission"))).first();
 
-
+        for (String teamMember : team_submission.getList("reviewed_team", String.class)) {
+            Document newPeerReview = new Document()
+                    .append("course_id", courseID)
+                    .append("grade", team_submission.getInteger("grade"))
+                    .append("team_name", teamName);
+            List<Document> peerReviews = studentCollection.find(eq("student_id", teamMember)).first().getList("peer_reviews", Document.class);
+            peerReviews.add(newPeerReview);
+            Bson studentQuery = eq("student_id", teamMember);
+            Bson update = Updates.set("team_submissions", peerReviews);
+            UpdateOptions options = new UpdateOptions().upsert(true);
+            studentCollection.updateOne(studentQuery, update, options);
+        }
         submissionsCollection.findOneAndUpdate(team_submission, set("grade", final_grade));
     }
 
@@ -575,7 +596,7 @@ public class PeerReviewAssignmentInterface {
             Document gradeDoc = new Document()
                     .append("studentID", studentID)
                     .append("grade", result.getDouble("grade"));
-           //
+            //
             // System.out.println(gradeDoc);
             return gradeDoc;
         }
@@ -696,24 +717,19 @@ public class PeerReviewAssignmentInterface {
             //append to overall grades holder
             gradesGivenHolder.append(teamName, indGradesHolder);
 
-                }
-
-            }
         }
 
-
-
         matrixHolder.append("Average Grades Given", gradesGivenHolder);
+        //   matrixHolder.append("Average Grade Given", gradeHolder);
 
-            //create document to then append to the matric doc(for grades given averages)
-            for (String key : temp.keySet()) {
-                //first calculate average
-                double average = (double) teamsToGradesGiven.get(assignmentNumber).get(key) / (double) teamsToCountOfReviews.get(assignmentNumber).get(key);
-
+        //create document to then append to the matrix doc(for grades given averages)
+//        for (String key : temp.keySet()) {
+//            //first calculate average
+//            double average = (double) teamsToGradesGiven.get(assignmentNumber).get(key) / (double) teamsToCountOfReviews.get(assignmentNumber).get(key);
+//        }
         return matrixHolder;
     }
 
-            holderr.append("Average Grade Given", gradesHolder);
 
     //redone outlier detection over time
     public Document getAllPotentialOutliersAndGrades(String courseID) {
@@ -841,29 +857,24 @@ public class PeerReviewAssignmentInterface {
                 gradesGivenHolder.append(teamName, indGradesHolder);
 
             }
-            matrixOfGrades.append(teamForThisAssignment, gradesToOutliers);
+            //       matrixOfGrades.append(teamForThisAssignment, gradesToOutliers);
 
         }
 
-            matrixHolder.append("Average Grades Given", gradesGivenHolder);
+        //    matrixHolder.append("Average Grades Given", gradesGivenHolder);
 
-                //to get the grade document we need to go one step further
-                Document gradesAndBoolean = (Document) valuesOfEachKey.get(subKeySet);
+        //to get the grade document we need to go one step further
+        //        Document gradesAndBoolean = (Document) valuesOfEachKey.get(subKeySet);
 
-            allPotentialOutliers.append(String.valueOf(assignmentID), matrixHolder);
-
-            }
-
-        }
-
+        //    allPotentialOutliers.append(String.valueOf(assignmentID), matrixHolder);
 
         return allPotentialOutliers;
     }
 
-        matrixOfGrades.append("Average Grade Given", gradesHolder);
+    //    matrixOfGrades.append("Average Grade Given", gradesHolder);
 
-        return matrixOfGrades;
-    }
+    //    return matrixOfGrades;
+    //}
 
     /**
      * abstraction method that calls calculate IQR, and uses the values calculated from there
@@ -995,9 +1006,6 @@ public class PeerReviewAssignmentInterface {
 
         }
 
-
-        }
-
         int IQR = 0;
         //after all of the team grades are obtained,
 
@@ -1080,6 +1088,7 @@ public class PeerReviewAssignmentInterface {
 
         //for every team in the course, grab the points, and add them to an integer array
         List<Integer> gradesForAssignment = new ArrayList<Integer>();
+        int gradeFinalizedCounter = 0;
         //for each assignment that is completed
         for (Document eachAssignment : results) {
             System.out.println("Iterating over new assignment");
@@ -1111,13 +1120,12 @@ public class PeerReviewAssignmentInterface {
 
                 }
 
-
             }
 
         }
 
 
-        if (gradesForAssignment == null || gradeFinalizedCounter == 0) {
+        if (gradesForAssignment == null || gradeFinalizedCounter == 0)
             throw new WebApplicationException(Response.status(Response.Status.BAD_REQUEST).entity("No grades have been finalized, therefore outlier detection over time will not be accurate").build());
 
         int IQR = 0;
@@ -1523,14 +1531,92 @@ public class PeerReviewAssignmentInterface {
          * */
 
     /*public boolean isOutlier(int numberToCompare, int Q1, int Q3, int IQR){
-
-
         return allPotentialOutliers;
-
     }
     */
 
 
         return allPotentialOutliers;
+    }
+
+    public List<String> getReviewTeams(String courseID, int assignmentID, String teamName) {
+        Document assignment = assignmentCollection.find(and(eq("assignment_id", assignmentID), eq("course_id", courseID))).first();
+        Document assignedTeams = (Document) assignment.get("assigned_teams");
+        List<String> teams = assignment.getList("all_teams", String.class);
+        if(teams == null){
+            return null;
+        }
+        ArrayList<String> reviewTeams = new ArrayList<>();
+        for(String team : teams){
+            List<String> teamList = assignedTeams.getList(team, String.class);
+            if(teamList == null){
+                continue;
+            }
+            if(teamList.contains(teamName)){
+                reviewTeams.add(team);
+            }
+        }
+        return reviewTeams;
+    }
+
+    /**
+     * gets list of submissions to be peer-reviewed by a specified team
+     *
+     * @param courseID course in question
+     * @param assignmentID assignment for which desired submissions are made
+     * @param teamName aforementioned specified team
+     * @return list of submissions to be peer-reviewed by a specified team
+     */
+    public List<Document> peerReviewsGiven(String courseID, int assignmentID, String teamName) {
+        List<String> teams = getAssignedTeams(courseID, assignmentID, teamName);
+        if(teams == null){
+            return null;
+        }
+        List<Document> submissions = new ArrayList<>();
+        for(String team : teams){
+            Document submission = submissionsCollection.find(and(eq("team_name",team),
+                    eq("course_id", courseID), eq("assignment_id", assignmentID),
+                    eq("type", "team_submission"))).first();
+            if(submission != null) {
+                submissions.add(submission);
+            }
+        }
+        return submissions;
+    }
+
+    /**
+     * gets list of submissions to be peer-reviewed by a specified team
+     *
+     * @param courseID course in question
+     * @param assignmentID assignment for which desired submissions are made
+     * @param teamName aforementioned specified team
+     * @return list of submissions to be peer-reviewed by a specified team
+     */
+    public List<Document> peerReviewsReceived(String courseID, int assignmentID, String teamName) {
+        List<String> teams = getReviewTeams(courseID, assignmentID, teamName);
+        if(teams == null){
+            return null;
+        }
+        List<Document> submissions = new ArrayList<>();
+        for(String team : teams){
+            if(team == null){
+                continue;
+            }
+            Document submission = submissionsCollection.find(and(eq("reviewed_by",team),
+                    eq("course_id", courseID), eq("assignment_id", assignmentID),
+                    eq("type", "peer_review_submission"), eq("reviewed_team", teamName)))
+                    .first();
+            if(submission != null) {
+                submissions.add(submission);
+            }else{
+                submission = submissionsCollection.find(and(eq("team_name", team),
+                        eq("course_id", courseID), eq("assignment_id", assignmentID),
+                        eq("type", "team_submission"))).first();
+                if(submission != null){
+                    submissions.add(submission);
+                }
+            }
+        }
+        return submissions;
     }
 }
